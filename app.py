@@ -1,33 +1,65 @@
 import streamlit as st
-import pickle, os, numpy as np
-from sklearn.preprocessing import normalize
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import os
+from utils.preprocessing import load_artifacts, normalize_query_text
+from utils.inference import Recommender
+from utils.ui import render_recommendation_card, copy_button
 
-st.title("HijrahFood Recommender (Prototype)")
-ART_PATH = '/content/artifacts'
+st.set_page_config(page_title="CNN-RECOMMENDER", layout="wide")
+st.title("Retail Smart Recommender – CNN-RECOMMENDER")
+st.markdown("**Sistem rekomendasi dua arah untuk produk HijrahFood (Masakan → Produk / Produk → Masakan)**")
 
-# Load embeddings dan tokenizer
-with open(os.path.join(ART_PATH, 'sku_embeddings.pkl'), 'rb') as f:
-    data = pickle.load(f)
-    sku_list = data['sku_list']
-    product_embeddings = data['embeddings']
+# ---------- LOAD ARTIFACTS ----------
+ART_PATH_CANDIDATES = ['./artifacts', '/content/artifacts', '/app/artifacts']
+art_path = None
 
-product_embeddings_norm = normalize(product_embeddings, axis=1)
+for p in ART_PATH_CANDIDATES:
+    if os.path.exists(p):
+        art_path = p
+        break
 
-with open(os.path.join(ART_PATH, 'tokenizer.pkl'), 'rb') as f:
-    tokenizer = pickle.load(f)
+if art_path is None:
+    st.error("❌ Folder artifacts/ tidak ditemukan. Upload tokenizer.pkl, sku_embeddings.pkl, textcnn_model.pt, products.csv.")
+    st.stop()
 
-q = st.text_input('Masukkan masakan atau produk (contoh: rendang / ayam boneless dada)')
-k = st.slider('Jumlah rekomendasi', 1, 10, 5)
+tokenizer, sku_list, product_embeddings, model, df_products = load_artifacts(art_path)
 
-if st.button('Cari'):
-    if not q:
-        st.warning('Masukkan query teks dulu.')
+
+recommender = Recommender(
+    tokenizer=tokenizer,
+    sku_list=sku_list,
+    product_embeddings=product_embeddings,
+    model=model,
+    df_products=df_products
+)
+
+
+# ---------- SIDEBAR ----------
+st.sidebar.header("Pengaturan")
+top_k = st.sidebar.slider("Jumlah rekomendasi (Top-K)", 1, 12, 5)
+mode = st.sidebar.selectbox("Mode rekomendasi", ["Masakan → Produk", "Produk → Masakan"])
+
+# ---------- MAIN INPUT ----------
+st.markdown("---")
+q = st.text_input("Masukkan masakan atau nama produk (contoh: 'rendang' atau 'ayam boneless dada')")
+
+if st.button("Cari"):
+    if not q.strip():
+        st.warning("⚠️ Masukkan query terlebih dahulu.")
     else:
-        seq = tokenizer.texts_to_sequences([q])
-        pad = pad_sequences(seq, maxlen=28, padding='post')
-        # Placeholder: untuk produksi sebaiknya load model dan hitung cosine similarity.
-        # Saat ini tampilkan sku teratas sebagai demo.
-        st.write('Hasil (placeholder):')
-        for i in range(min(k, len(sku_list))):
-            st.write(f"{sku_list[i]}")
+        query = normalize_query_text(q)
+        results = recommender.query(query, top_k=top_k)
+        st.success(f"Menampilkan {len(results)} rekomendasi untuk: **{q}**")
+
+        cols_per_row = 2
+        for i in range(0, len(results), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, r in enumerate(results[i:i+cols_per_row]):
+                with cols[j]:
+                    render_recommendation_card(r)
+                    summary = (
+                        f"SKU: {r['SKU']}\n"
+                        f"Nama: {r['Nama Barang']}\n"
+                        f"Skor: {r['score']:.3f}\n"
+                        f"Rekomendasi penggunaan:\n- " + "\n- ".join(r.get('usage', []))
+                    )
+                    copy_button(summary, key=f"copy_{i+j}")
